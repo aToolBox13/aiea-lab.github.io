@@ -42,7 +42,7 @@ def main():
     
     print("sending KB to GPT for Prolog translation...")
     prolog_rules = translate_nl_to_prolog(nl_input)
-    print("\n[Generated Prolog Knowledge Base]")
+    print("\n[Generated Prolog KB]")
     print(prolog_rules)
     print("-" * 50)
     

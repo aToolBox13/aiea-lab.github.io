@@ -7,7 +7,9 @@ client = OpenAI()
 
 def translate_nl_to_prolog(prompt_text):
     system_instruction = (
-        "translate the natural language statement into proper SWI-Prolog. "
+        "translate the natural language statement into good SWI-Prolog. "
+        "Use lowercase for all entities and predicate names. "
+        "use stndrd SWI-Prolog operators  for inequality. "
         "respond only with code inside a markdown code block. "
         "no explanations."
     )
@@ -26,15 +28,16 @@ def translate_nl_to_prolog(prompt_text):
     return prolog_code
 
 def main():
+    # Keep the prompt items lowercase so the AI reliably maps them to Prolog atoms
     nl_input = (
         "facts:\n"
-        "Jokic is the parent of Wembanyama. Jokic is the parent of Antetokounmpo. Jokic is the parent of doncic.\n"
-        "Brunson is the parent of Wembanyama. Brunson is the parent of Antetokounmpo. Brunson is the parent of Doncic.\n"
-        "Lebron is the parent of Jokic. Curry is the parent of Jokic.\n"
-        "Durant is the parent of Brunson. Harden is the parent of Brunson.\n"
+        "jokic is the parent of wembanyama. jokic is the parent of antetokounmpo. jokic is the parent of doncic.\n"
+        "brunson is the parent of wembanyama. brunson is the parent of antetokounmpo. brunson is the parent of doncic.\n"
+        "lebron is the parent of jokic. curry is the parent of jokic.\n"
+        "durant is the parent of brunson. harden is the parent of brunson.\n"
         "\nRules:\n"
         "X is a grandparent of Y if X is the parent of Z and Z is the parent of Y.\n"
-        "X is a sibling of Y if Z is the parent of X, Z is the parent of Y, and X is not equal to Y."
+        "X is a sibling of Y if Z is the parent of X, Z is the parent of Y, and X \\= Y."
     )
     
     print("sending KB to GPT for Prolog translation...")
@@ -52,8 +55,8 @@ def main():
         prolog = Prolog()
         prolog.consult(temp_file_path)
         
-        print("\nExecuting Query 1: Who are the grandparents of Wembanyama?")
-        query_1 = "grandparent(X, Wembanyama)"
+        print("\nquery 1: Who are the grandparents of Wembanyama?")
+        query_1 = "grandparent(X, wembanyama)"
         results_1 = list(prolog.query(query_1))
         
         if results_1:
@@ -63,8 +66,8 @@ def main():
         else:
             print(" - no grandparents found")
             
-        print("\nExecuting Query 2: Who are the siblings of Doncic?")
-        query_2 = "sibling(X, Doncic)"
+        print("\nquery 2: Who are the siblings of Doncic?")
+        query_2 = "sibling(X, doncic)"
         results_2 = list(prolog.query(query_2))
         
         if results_2:

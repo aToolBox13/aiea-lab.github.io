@@ -28,7 +28,6 @@ def translate_nl_to_prolog(prompt_text):
     return prolog_code
 
 def main():
-    # Keep the prompt items lowercase so the AI reliably maps them to Prolog atoms
     nl_input = (
         "facts:\n"
         "jokic is the parent of wembanyama. jokic is the parent of antetokounmpo. jokic is the parent of doncic.\n"

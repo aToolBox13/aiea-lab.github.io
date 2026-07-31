@@ -1,0 +1,87 @@
+from fol_backward_chaining import Term as T, KnowledgeBase, unify, bindings
+
+
+def test_unify_basic():
+    assert unify("x", "LeBron", {}) == {"x": "LeBron"}
+    r = unify(T("Plays", "LeBron", "x"), T("Plays", "LeBron", "Lakers"), {})
+    assert r == {"x": "Lakers"}
+    r2 = unify(T("Plays", "LeBron", "x"), T("Coaches", "LeBron", "Lakers"), {})
+    assert r2 is None
+
+
+def test_unify_two_vars():
+    theta = unify(T("Plays", "LeBron", "x"), T("Plays", "y", "Lakers"), {})
+    assert theta["y"] == "LeBron"
+    assert theta["x"] == "Lakers"
+
+
+def test_occurs_check():
+    bad = unify("x", T("F", "x"), {})
+    assert bad is None
+
+
+def test_fact_lookup():
+    kb = KnowledgeBase()
+    kb.fact(T("Plays", "LeBron", "Lakers"))
+    assert kb.ask_one(T("Plays", "LeBron", "Lakers")) is not None
+    assert kb.ask_one(T("Plays", "Lakers", "LeBron")) is None
+
+
+def test_rule_chaining():
+    kb = KnowledgeBase()
+    kb.fact(T("Plays", "LeBron", "Lakers"))
+    kb.fact(T("Coaches", "Redick", "Lakers"))
+    kb.tell(T("Roster", "x", "y"), [T("Plays", "x", "t"), T("Coaches", "y", "t")])
+    q = T("Roster", "who", "Redick")
+    res = []
+    for theta in kb.ask(q):
+        res.append(bindings(theta, q)["who"])
+    assert res == ["LeBron"]
+
+
+def test_multiple_answers():
+    kb = KnowledgeBase()
+    kb.fact(T("Plays", "LeBron", "Lakers"))
+    kb.fact(T("Plays", "RoleGuy", "Lakers"))
+    kb.fact(T("Coaches", "Redick", "Lakers"))
+    kb.tell(T("Roster", "x", "y"), [T("Plays", "x", "t"), T("Coaches", "y", "t")])
+    q = T("Roster", "x", "Redick")
+    got = set()
+    for theta in kb.ask(q):
+        got.add(bindings(theta, q)["x"])
+    assert got == {"LeBron", "RoleGuy"}
+
+
+def test_legend_chain():
+    kb = KnowledgeBase()
+    kb.tell(T("Legend", "x"), [T("AllStar", "x"), T("Plays", "x", "t"), T("WonChampionship", "t")])
+    kb.fact(T("AllStar", "LeBron"))
+    kb.fact(T("AllStar", "Giannis"))
+    kb.fact(T("Plays", "LeBron", "Lakers"))
+    kb.fact(T("Plays", "Giannis", "Bucks"))
+    kb.fact(T("WonChampionship", "Lakers"))
+    q = T("Legend", "w")
+    theta = kb.ask_one(q)
+    assert theta is not None
+    assert bindings(theta, q)["w"] == "LeBron"
+
+
+def test_no_infinite_loop():
+    kb = KnowledgeBase()
+    kb.fact(T("Passed", "LeBron", "AD"))
+    kb.fact(T("Passed", "AD", "Reaves"))
+    kb.tell(T("Assisted", "x", "y"), [T("Passed", "x", "y")])
+    kb.tell(T("Assisted", "x", "z"), [T("Passed", "x", "y"), T("Assisted", "y", "z")])
+    assert kb.ask_one(T("Assisted", "LeBron", "Reaves")) is not None
+    assert kb.ask_one(T("Assisted", "Reaves", "LeBron")) is None
+
+
+if __name__ == "__main__":
+    fns = [v for k, v in list(globals().items()) if k.startswith("test_")]
+    passed = 0
+    for fn in fns:
+        fn()
+        passed += 1
+        print("PASS " + fn.__name__)
+    print()
+    print(str(passed) + " tests passed")

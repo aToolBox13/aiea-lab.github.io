@@ -1,0 +1,75 @@
+from engine import load_prolog, parse_query, bindings
+from rag import build_retriever
+from logic_lm import answer_question, fallback_translate
+
+#go lakers baby
+
+def test_prolog_loads():
+    kb = load_prolog("kb_basketball.pl")
+    assert len(kb.rules) >= 25
+
+
+def test_fact_query():
+    kb = load_prolog("kb_basketball.pl")
+    q = parse_query("plays(lebron, lakers)")
+    assert kb.ask_one(q) is not None
+
+
+def test_rule_query_true():
+    kb = load_prolog("kb_basketball.pl")
+    q = parse_query("legend(lebron)")
+    ok, theta, trace = kb.ask_with_trace(q)
+    assert ok is True
+    assert len(trace) > 0
+
+
+def test_rule_query_false():
+    kb = load_prolog("kb_basketball.pl")
+    q = parse_query("legend(reaves)")
+    ok, theta, trace = kb.ask_with_trace(q)
+    assert ok is False
+
+
+def test_multi_answer_query():
+    kb = load_prolog("kb_basketball.pl")
+    q = parse_query("roster(X, redick)")
+    got = set()
+    for theta in kb.ask(q):
+        got.add(bindings(theta, q)["x"])
+    assert "Lebron" in got
+    assert "Reaves" in got
+
+
+def test_retriever_returns_relevant_clauses():
+    r = build_retriever("kb_basketball.pl")
+    hits = r.invoke("does lebron play for the lakers")
+    clauses = [h.metadata["clause"] for h in hits]
+    assert any("plays(lebron, lakers)" in c for c in clauses)
+
+
+def test_fallback_translate_basic():
+    q = fallback_translate("is lebron a legend?", ["legend(X) :- allstar(X)"])
+    assert q == "legend(lebron)"
+
+
+def test_full_pipeline_true_case():
+    result = answer_question("is lebron a legend?")
+    assert result["answer"] is True
+    assert result["query"] == "legend(lebron)"
+    assert len(result["trace"]) > 0
+
+
+def test_full_pipeline_false_case():
+    result = answer_question("is jokic a champion mvp?")
+    assert result["answer"] is False
+
+
+if __name__ == "__main__":
+    fns = [v for k, v in list(globals().items()) if k.startswith("test_")]
+    passed = 0
+    for fn in fns:
+        fn()
+        passed += 1
+        print("PASS " + fn.__name__)
+    print()
+    print(str(passed) + " tests passed")

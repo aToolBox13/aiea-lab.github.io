@@ -1,0 +1,254 @@
+import re
+from itertools import count
+
+class Term:
+    def __init__(self, pred, *args):
+        self.predicate = pred
+        self.args = tuple(args)
+
+    def __repr__(self):
+        return self.predicate + "(" + ", ".join(str(a) for a in self.args) + ")"
+
+    def __eq__(self, other):
+        if not isinstance(other, Term):
+            return False
+        return self.predicate == other.predicate and self.args == other.args
+
+    def __hash__(self):
+        return hash((self.predicate, self.args))
+
+
+def is_var(x):
+    if not isinstance(x, str) or len(x) == 0:
+        return False
+    return x[0].islower() or x[0] == "?"
+
+
+def unify(x, y, theta):
+    if theta is None:
+        return None
+    if x == y:
+        return theta
+    if is_var(x):
+        return unify_var(x, y, theta)
+    if is_var(y):
+        return unify_var(y, x, theta)
+    if isinstance(x, Term) and isinstance(y, Term):
+        if x.predicate != y.predicate or len(x.args) != len(y.args):
+            return None
+        for a, b in zip(x.args, y.args):
+            theta = unify(a, b, theta)
+            if theta is None:
+                return None
+        return theta
+    return None
+
+
+def unify_var(v, x, theta):
+    if v in theta:
+        return unify(theta[v], x, theta)
+    if is_var(x) and x in theta:
+        return unify(v, theta[x], theta)
+    if occurs(v, x, theta):
+        return None
+    t2 = dict(theta)
+    t2[v] = x
+    return t2
+
+
+def occurs(v, x, theta):
+    if v == x:
+        return True
+    if is_var(x) and x in theta:
+        return occurs(v, theta[x], theta)
+    if isinstance(x, Term):
+        return any(occurs(v, a, theta) for a in x.args)
+    return False
+
+
+def sub(theta, term):
+    if isinstance(term, Term):
+        return Term(term.predicate, *[sub(theta, a) for a in term.args])
+    if is_var(term) and term in theta:
+        return sub(theta, theta[term])
+    return term
+
+
+class Rule:
+    def __init__(self, head, body=()):
+        self.head = head
+        self.body = tuple(body)
+
+    def __repr__(self):
+        if not self.body:
+            return str(self.head) + "."
+        return " & ".join(str(b) for b in self.body) + " => " + str(self.head)
+
+
+class KnowledgeBase:
+    def __init__(self):
+        self.rules = []
+        self.cnt = count()
+        self.MAXDEPTH = 50
+
+    def tell(self, head, body=()):
+        self.rules.append(Rule(head, body))
+
+    def fact(self, head):
+        self.rules.append(Rule(head, ()))
+
+    def rename(self, rule):
+        n = next(self.cnt)
+        seen = {}
+
+        def go(t):
+            if isinstance(t, Term):
+                return Term(t.predicate, *[go(a) for a in t.args])
+            if is_var(t):
+                if t not in seen:
+                    seen[t] = t + "_" + str(n)
+                return seen[t]
+            return t
+
+        return Rule(go(rule.head), [go(b) for b in rule.body])
+
+    def ask(self, q):
+        for r in self.bc_or(q, {}, 0):
+            yield r
+
+    def ask_one(self, q):
+        for theta in self.ask(q):
+            return theta
+        return None
+
+    def ask_with_trace(self, q):
+        for theta, trace in self.bc_or_traced(q, {}, 0, []):
+            return True, theta, trace
+        return False, None, []
+
+    def bc_or(self, goal, theta, depth):
+        if depth > self.MAXDEPTH:
+            return
+        g = sub(theta, goal)
+        for r in self.rules:
+            r2 = self.rename(r)
+            t2 = unify(r2.head, g, theta)
+            if t2 is not None:
+                for res in self.bc_and(r2.body, t2, depth + 1):
+                    yield res
+
+    def bc_and(self, goals, theta, depth):
+        if theta is None:
+            return
+        if not goals:
+            yield theta
+            return
+        first, rest = goals[0], goals[1:]
+        for t2 in self.bc_or(first, theta, depth):
+            for t3 in self.bc_and(rest, t2, depth):
+                yield t3
+
+    def bc_or_traced(self, goal, theta, depth, trace):
+        if depth > self.MAXDEPTH:
+            return
+        g = sub(theta, goal)
+        for r in self.rules:
+            r2 = self.rename(r)
+            t2 = unify(r2.head, g, theta)
+            if t2 is None:
+                continue
+            if not r2.body:
+                step = "fact: " + str(sub(t2, r2.head))
+                yield t2, trace + [step]
+            else:
+                step = "trying rule " + str(r2) + "  to prove " + str(g)
+                for res in self.bc_and_traced(r2.body, t2, depth + 1, trace + [step]):
+                    yield res
+
+    def bc_and_traced(self, goals, theta, depth, trace):
+        if theta is None:
+            return
+        if not goals:
+            yield theta, trace
+            return
+        first, rest = goals[0], goals[1:]
+        for t2, trace2 in self.bc_or_traced(first, theta, depth, trace):
+            for t3, trace3 in self.bc_and_traced(rest, t2, depth, trace2):
+                yield t3, trace3
+
+
+def bindings(theta, q):
+    out = {}
+
+    def walk(t):
+        if isinstance(t, Term):
+            for a in t.args:
+                walk(a)
+        elif is_var(t):
+            out[t] = sub(theta, t)
+
+    walk(q)
+    return out
+
+
+def prolog_var_to_ours(a):
+    a = a.strip()
+    if a[0].isupper():
+        return a[0].lower() + a[1:]
+    else:
+        return a[0].upper() + a[1:]
+
+
+def parse_term(s):
+    s = s.strip()
+    m = re.match(r"(\w+)\((.*)\)$", s)
+    if not m:
+        return s
+    pred = m.group(1)
+    argstr = m.group(2)
+    args = [prolog_var_to_ours(a) for a in argstr.split(",")]
+    return Term(pred, *args)
+
+
+def parse_query(qstr):
+    return parse_term(qstr.strip().rstrip("."))
+
+
+def split_top_level_commas(s):
+    parts = []
+    depth = 0
+    cur = ""
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        if ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return [p.strip() for p in parts]
+
+
+def load_prolog(path):
+    kb = KnowledgeBase()
+    with open(path) as f:
+        raw = f.read()
+
+    raw = re.sub(r"%.*", "", raw)
+    clauses = [c.strip() for c in raw.split(".") if c.strip()]
+
+    for c in clauses:
+        if ":-" in c:
+            head_str, body_str = c.split(":-", 1)
+            head = parse_term(head_str)
+            body_parts = split_top_level_commas(body_str)
+            body = [parse_term(p) for p in body_parts]
+            kb.tell(head, body)
+        else:
+            kb.fact(parse_term(c))
+
+    return kb

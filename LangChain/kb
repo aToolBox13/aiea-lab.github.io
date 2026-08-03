@@ -1,0 +1,43 @@
+plays(lebron, lakers).
+plays(curry, warriors).
+plays(giannis, bucks).
+plays(luka, lakers).
+plays(jokic, nuggets).
+plays(tatum, celtics).
+plays(reaves, lakers).
+
+coaches(redick, lakers).
+coaches(kerr, warriors).
+coaches(budenholzer, suns).
+
+allstar(lebron).
+allstar(curry).
+allstar(giannis).
+allstar(luka).
+allstar(jokic).
+allstar(tatum).
+
+won_championship(lakers).
+won_championship(warriors).
+won_championship(bucks).
+won_championship(celtics).
+
+mvp(jokic).
+mvp(giannis).
+
+rivals(lakers, celtics).
+rivals(warriors, suns).
+
+legend(X) :- allstar(X), plays(X, T), won_championship(T).
+
+roster(X, Y) :- plays(X, T), coaches(Y, T).
+
+teammate(X, Y) :- plays(X, T), plays(Y, T).
+
+champion_mvp(X) :- mvp(X), plays(X, T), won_championship(T).
+
+rival_player(X, Y) :- plays(X, T1), plays(Y, T2), rivals(T1, T2).
+
+goat_candidate(X) :- legend(X), mvp(X).
+
+coached_allstar(Y) :- coaches(Y, T), plays(X, T), allstar(X).

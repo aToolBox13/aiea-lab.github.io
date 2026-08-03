@@ -1,0 +1,65 @@
+import re
+import numpy as np
+from langchain_core.embeddings import Embeddings
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+
+from engine import load_prolog, parse_term, split_top_level_commas
+
+
+class HashEmbeddings(Embeddings):
+    def __init__(self, dim=256):
+        self.dim = dim
+
+    def _vec(self, text):
+        v = np.zeros(self.dim)
+        words = re.findall(r"[a-z0-9_]+", text.lower())
+        for w in words:
+            idx = hash(w) % self.dim
+            v[idx] += 1
+        n = np.linalg.norm(v)
+        if n > 0:
+            v = v / n
+        return v.tolist()
+
+    def embed_documents(self, texts):
+        return [self._vec(t) for t in texts]
+
+    def embed_query(self, text):
+        return self._vec(text)
+
+
+def clause_to_sentence(clause_str):
+    clause_str = clause_str.strip()
+    if ":-" in clause_str:
+        head, body = clause_str.split(":-", 1)
+        body_parts = split_top_level_commas(body.rstrip("."))
+        return head.strip() + " holds if " + " and ".join(body_parts) + " all hold"
+    m = re.match(r"(\w+)\((.*)\)", clause_str.rstrip("."))
+    if not m:
+        return clause_str
+    pred, args = m.group(1), m.group(2)
+    args = [a.strip() for a in args.split(",")]
+    return pred.replace("_", " ") + " " + " ".join(args)
+
+
+def build_retriever(pl_path, k=4):
+    with open(pl_path) as f:
+        raw = f.read()
+    raw = re.sub(r"%.*", "", raw)
+    clauses = [c.strip() for c in raw.split(".") if c.strip()]
+
+    docs = []
+    for c in clauses:
+        sentence = clause_to_sentence(c)
+        docs.append(Document(page_content=sentence, metadata={"clause": c}))
+
+    store = FAISS.from_documents(docs, HashEmbeddings())
+    return store.as_retriever(search_kwargs={"k": k})
+
+
+if __name__ == "__main__":
+    r = build_retriever("kb_basketball.pl")
+    hits = r.invoke("is lebron a legend of the lakers")
+    for h in hits:
+        print(h.page_content, "  <-  ", h.metadata["clause"])

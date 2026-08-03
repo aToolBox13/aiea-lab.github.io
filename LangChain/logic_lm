@@ -18,10 +18,10 @@ TRANSLATE_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def get_llm():
-    if not os.environ.get("openAI-API_KEY"):
+    if not os.environ.get("OPENAI_API_KEY"):
         return None
-    from langchain_anthropic import ChatAnthropic
-    return ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
+    from langchain_openai import ChatOpenAI
+    return ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 
 def fallback_translate(question, context_clauses):

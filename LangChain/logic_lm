@@ -18,7 +18,7 @@ TRANSLATE_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def get_llm():
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not os.environ.get("openAI-API_KEY"):
         return None
     from langchain_anthropic import ChatAnthropic
     return ChatAnthropic(model="claude-sonnet-4-6", temperature=0)

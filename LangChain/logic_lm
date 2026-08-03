@@ -1,0 +1,131 @@
+import os
+import re
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
+from engine import load_prolog, parse_query, bindings
+from rag import build_retriever
+
+
+TRANSLATE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+     "translate yes/no questions about basketball players into a single "
+     "prolog-style query using the predicates shown in the context below. "
+     "reply with jus the query, nun else, like: legend(lebron)\n\n"
+     "context (relevant facts/rules from the knowledge base):\n{context}"),
+    ("human", "{question}")
+])
+
+
+def get_llm():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    from langchain_anthropic import ChatAnthropic
+    return ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
+
+
+def fallback_translate(question, context_clauses):
+    q = question.lower()
+    preds = set()
+    for c in context_clauses:
+        m = re.match(r"(\w+)\(", c)
+        if m:
+            preds.add(m.group(1))
+
+    names = re.findall(r"[a-z]+", q)
+    known_names = ["lebron", "curry", "giannis", "luka", "jokic", "tatum",
+                   "reaves", "lakers", "warriors", "bucks", "celtics",
+                   "nuggets", "suns", "redick", "kerr", "budenholzer"]
+    found_names = [n for n in names if n in known_names]
+
+    pred_guess = None
+    if "legend" in q:
+        pred_guess = "legend"
+    elif "roster" in q or "coach" in q:
+        pred_guess = "roster"
+    elif "teammate" in q:
+        pred_guess = "teammate"
+    elif "mvp" in q and "champ" in q:
+        pred_guess = "champion_mvp"
+    elif "goat" in q:
+        pred_guess = "goat_candidate"
+    elif "rival" in q:
+        pred_guess = "rival_player"
+    elif "allstar" in q or "all-star" in q or "all star" in q:
+        pred_guess = "allstar"
+    elif "plays" in q or "play for" in q:
+        pred_guess = "plays"
+
+    if pred_guess is None or not found_names:
+        return None
+
+    return pred_guess + "(" + ", ".join(found_names) + ")"
+
+
+def llm_translate(question, context_clauses):
+    llm = get_llm()
+    if llm is None:
+        return fallback_translate(question, context_clauses)
+
+    chain = TRANSLATE_PROMPT | llm | StrOutputParser()
+    context = "\n".join(context_clauses)
+    out = chain.invoke({"question": question, "context": context})
+    out = out.strip().strip("`")
+    m = re.search(r"\w+\([^)]*\)", out)
+    if not m:
+        return None
+    return m.group(0)
+
+
+def answer_question(question, kb_path="kb_basketball.pl"):
+    kb = load_prolog(kb_path)
+    retriever = build_retriever(kb_path)
+    hits = retriever.invoke(question)
+    context_clauses = [h.metadata["clause"] for h in hits]
+
+    query_str = llm_translate(question, context_clauses)
+    if query_str is None:
+        return {
+            "question": question,
+            "query": None,
+            "answer": None,
+            "trace": [],
+            "note": "couldn't translate this into a query, try rephrasing"
+        }
+
+    query_term = parse_query(query_str)
+    proved, theta, trace = kb.ask_with_trace(query_term)
+
+    return {
+        "question": question,
+        "retrieved_context": context_clauses,
+        "query": query_str,
+        "answer": proved,
+        "bindings": bindings(theta, query_term) if proved else None,
+        "trace": trace,
+    }
+
+
+def pretty_print(result):
+    print("Q:", result["question"])
+    print("retrieved context:", result.get("retrieved_context"))
+    print("translated query:", result["query"])
+    print("ANSWER:", result["answer"])
+    if result["trace"]:
+        print("trace:")
+        for step in result["trace"]:
+            print("  " + step)
+    if result.get("note"):
+        print("note:", result["note"])
+    print()
+
+
+if __name__ == "__main__":
+    qs = [
+        "is lebron a legend?",
+        "is giannis a legend?",
+        "who is on redick's roster?",
+        "is jokic a champion mvp?",
+    ]
+    for q in qs:
+        pretty_print(answer_question(q))

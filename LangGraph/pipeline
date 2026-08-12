@@ -1,0 +1,197 @@
+import os
+import re
+from typing import TypedDict, List, Optional
+
+from langgraph.graph import StateGraph, END
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
+from engine import load_prolog, parse_query, bindings
+from rag import build_retriever
+from logic_lm import get_llm, fallback_translate, TRANSLATE_PROMPT
+
+KB_PATH = "kb_basketball.pl"
+MAX_BROADEN = 2
+MAX_REFINE = 2
+
+REFINE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+     "you had translated a question into a Prolog query but the solver "
+     "could not prove it true. think step by step (dont skip steps) about whether a different "
+     "predicate or argument order from the context would work better, then "
+     "reply with ONLY the corrected query, like: legend(lebron)\n\n"
+     "Context:\n{context}\n\nPrevious query that failed: {old_query}"),
+    ("human", "{question}")
+])
+
+
+class GraphState(TypedDict):
+    question: str
+    k: int
+    context: List[str]
+    relevant: bool
+    query: Optional[str]
+    proved: Optional[bool]
+    bind: Optional[dict]
+    trace: List[str]
+    broaden_attempts: int
+    refine_attempts: int
+    log: List[str]
+
+
+def retrieve_node(state):
+    r = build_retriever(KB_PATH, k=state["k"])
+    hits = r.invoke(state["question"])
+    ctx = [h.metadata["clause"] for h in hits]
+    log = state["log"] + ["retrieved " + str(len(ctx)) + " clauses at k=" + str(state["k"])]
+    return {"context": ctx, "log": log}
+
+
+def judge_node(state):
+    q_words = set(re.findall(r"[a-z]+", state["question"].lower()))
+    hit = False
+    for c in state["context"]:
+        c_words = set(re.findall(r"[a-z]+", c.lower()))
+        if q_words & c_words:
+            hit = True
+            break
+    llm = get_llm()
+    if llm is not None:
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Only answer with a yes or no. is this context relevant enough to ans the question?\nContext:\n{context}"),
+            ("human", "{question}")
+        ])
+        chain = prompt | llm | StrOutputParser()
+        out = chain.invoke({"context": "\n".join(state["context"]), "question": state["question"]})
+        hit = "yes" in out.lower()
+    log = state["log"] + ["judged relevant=" + str(hit)]
+    return {"relevant": hit, "log": log}
+
+
+def broaden_node(state):
+    return {"k": state["k"] + 3, "broaden_attempts": state["broaden_attempts"] + 1,
+            "log": state["log"] + ["not relevant enough, broadening retrieval"]}
+
+
+def translate_node(state):
+    q = llm_translate_wrap(state["question"], state["context"])
+    log = state["log"] + ["translated query: " + str(q)]
+    return {"query": q, "log": log}
+
+
+def llm_translate_wrap(question, context):
+    llm = get_llm()
+    if llm is None:
+        return fallback_translate(question, context)
+    chain = TRANSLATE_PROMPT | llm | StrOutputParser()
+    out = chain.invoke({"question": question, "context": "\n".join(context)})
+    out = out.strip().strip("`")
+    m = re.search(r"\w+\([^)]*\)", out)
+    return m.group(0) if m else None
+
+
+def solve_node(state):
+    if state["query"] is None:
+        return {"proved": False, "trace": [], "log": state["log"] + ["no query to solve"]}
+    kb = load_prolog(KB_PATH)
+    term = parse_query(state["query"])
+    proved, theta, trace = kb.ask_with_trace(term)
+    b = bindings(theta, term) if proved else None
+    log = state["log"] + ["solved: " + str(proved)]
+    return {"proved": proved, "bind": b, "trace": trace, "log": log}
+
+
+def refine_node(state):
+    llm = get_llm()
+    if llm is not None:
+        chain = REFINE_PROMPT | llm | StrOutputParser()
+        out = chain.invoke({
+            "context": "\n".join(state["context"]),
+            "old_query": state["query"],
+            "question": state["question"]
+        })
+        out = out.strip().strip("`")
+        m = re.search(r"\w+\([^)]*\)", out)
+        new_q = m.group(0) if m else state["query"]
+    else:
+        new_q = fallback_refine(state["question"], state["context"], state["query"])
+
+    return {"query": new_q, "refine_attempts": state["refine_attempts"] + 1,
+            "log": state["log"] + ["refined query to: " + str(new_q)]}
+
+
+def fallback_refine(question, context, old_query):
+    preds = []
+    for c in context:
+        m = re.match(r"(\w+)\(", c)
+        if m and m.group(1) not in preds:
+            preds.append(m.group(1))
+    if old_query is None:
+        return None
+    old_pred = re.match(r"(\w+)\(", old_query)
+    old_pred = old_pred.group(1) if old_pred else None
+    for p in preds:
+        if p != old_pred:
+            args = re.search(r"\((.*)\)", old_query)
+            args = args.group(1) if args else ""
+            return p + "(" + args + ")"
+    return old_query
+
+
+def route_after_judge(state):
+    if state["relevant"] or state["broaden_attempts"] >= MAX_BROADEN:
+        return "translate"
+    return "broaden"
+
+
+def route_after_solve(state):
+    if state["proved"] or state["refine_attempts"] >= MAX_REFINE:
+        return "end"
+    return "refine"
+
+
+def build_graph():
+    g = StateGraph(GraphState)
+    g.add_node("retrieve", retrieve_node)
+    g.add_node("judge", judge_node)
+    g.add_node("broaden", broaden_node)
+    g.add_node("translate", translate_node)
+    g.add_node("solve", solve_node)
+    g.add_node("refine", refine_node)
+
+    g.set_entry_point("retrieve")
+    g.add_edge("retrieve", "judge")
+    g.add_conditional_edges("judge", route_after_judge, {"translate": "translate", "broaden": "broaden"})
+    g.add_edge("broaden", "retrieve")
+    g.add_edge("translate", "solve")
+    g.add_conditional_edges("solve", route_after_solve, {"end": END, "refine": "refine"})
+    g.add_edge("refine", "solve")
+
+    return g.compile()
+
+
+def run(question, k=4):
+    graph = build_graph()
+    init = {
+        "question": question, "k": k, "context": [], "relevant": False,
+        "query": None, "proved": None, "bind": None, "trace": [],
+        "broaden_attempts": 0, "refine_attempts": 0, "log": []
+    }
+    final = graph.invoke(init)
+    return final
+
+
+if __name__ == "__main__":
+    for q in ["is lebron a legend?", "is jokic a champion mvp?", "who coaches redick's team's players?"]:
+        result = run(q)
+        print("Q:", q)
+        print("query:", result["query"])
+        print("proved:", result["proved"])
+        print("bindings:", result["bind"])
+        print("log:")
+        for l in result["log"]:
+            print("  " + l)
+        print("trace:")
+        for t in result["trace"]:
+            print("  " + t)
+        print()
